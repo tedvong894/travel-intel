@@ -107,7 +107,11 @@ def render_html(cards):
     html = html.replace("__ETYPES__", json.dumps(etypes, ensure_ascii=False))
     html = html.replace("__PROVS__", json.dumps(provs, ensure_ascii=False))
     html = html.replace("__HOTS__", json.dumps(hots, ensure_ascii=False))
-    html = html.replace("__CARDS__", json.dumps(data, ensure_ascii=False))
+    # 数据外置为 cards.json，看板运行时 fetch 加载（避免 index.html 内联过大）
+    cards_path = os.path.join(HERE, "cards.json")
+    with open(cards_path, "w", encoding="utf-8") as f:
+        json.dump({"etypes": etypes, "provs": provs, "hots": hots, "cards": data},
+                  f, ensure_ascii=False, separators=(",", ":"))
     return html
 
 
@@ -175,8 +179,7 @@ body { margin:0; font-family:-apple-system,"PingFang SC","Microsoft YaHei",sans-
 </div>
 <div class="grid" id="grid"></div>
 <script>
-const ETYPES=__ETYPES__, PROVS=__PROVS__, HOTS=__HOTS__, CARDS=__CARDS__;
-let f={type:'',hot:'',prov:''};
+let ETYPES,PROVS,HOTS,CARDS; let f={type:'',hot:'',prov:''};
 function chipBox(el,obj,key,allLabel){
   let h='<span class="chip'+(f[key]===''?' on':'')+'" data-k="" data-key="'+key+'">'+allLabel+
     (obj['__all__']?'':'')+'</span>';
@@ -238,7 +241,13 @@ function triggerRefresh(){
   // 静态页无法直接跑云端采集，提示到 App 内操作（与制造业 app 一致）
   alert('请在「旅游情报」App 内点「立即刷新」触发云端采集；\n或在本地终端运行：python3 collect.py && python3 travel_processor.py');
 }
-buildChips(); render();
+fetch('cards.json').then(r=>r.json()).then(d=>{
+  ETYPES=d.etypes; PROVS=d.provs; HOTS=d.hots; CARDS=d.cards;
+  buildChips(); render();
+}).catch(e=>{
+  document.getElementById('grid').innerHTML='<div class="empty">数据加载失败，请刷新页面</div>';
+  console.error(e);
+});
 </script>
 </body></html>"""
 
