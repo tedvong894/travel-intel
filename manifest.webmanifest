@@ -4,6 +4,7 @@
   "description": "高德POI采集·综合评分·短视频工坊",
   "start_url": "./",
   "scope": "./",
+  "id": "./",
   "display": "standalone",
   "background_color": "#f7f5f0",
   "theme_color": "#f7f5f0",
