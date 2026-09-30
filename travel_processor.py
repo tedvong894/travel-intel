@@ -119,6 +119,10 @@ HTML_TMPL = r"""<!DOCTYPE html>
 <html lang="zh-CN"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
 <title>__TITLE__</title>
+<link rel="manifest" href="manifest.json">
+<link rel="icon" type="image/png" sizes="192x192" href="icon-192.png">
+<link rel="apple-touch-icon" href="apple-touch-icon.png">
+<meta name="theme-color" content="#f7f5f0">
 <style>
 * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
 body { margin:0; font-family:-apple-system,"PingFang SC","Microsoft YaHei",sans-serif;
