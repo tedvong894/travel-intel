@@ -52,6 +52,9 @@ body { margin:0; font-family:-apple-system,"PingFang SC","Microsoft YaHei",sans-
 .pt .l1 { background:#fdf0d8; color:#a9742b; } .pt .l2 { background:#e8eef6; color:#3a6ea5; }
 .more { font-size:12px; color:#2b6cb0; cursor:pointer; margin-top:6px; display:inline-block; }
 .empty { text-align:center; color:#aaa; padding:40px; }
+.toast { position:fixed; left:50%; bottom:28px; transform:translateX(-50%); display:none;
+  background:#333; color:#fff; font-size:13px; padding:9px 16px; border-radius:18px;
+  box-shadow:0 4px 16px rgba(0,0,0,.2); z-index:99; max-width:80vw; }
 </style></head>
 <body>
 <div class="top">
@@ -65,6 +68,7 @@ body { margin:0; font-family:-apple-system,"PingFang SC","Microsoft YaHei",sans-
   <div class="chips" id="fProv"></div>
 </div>
 <div class="grid" id="grid"></div>
+<div class="toast" id="toast"></div>
 <script>
 let ETYPES,PROVS,HOTS,CARDS; let f={type:'',hot:'',prov:''};
 function chipBox(el,obj,key,allLabel){
@@ -124,10 +128,22 @@ function render(){
     box.style.display=open?'none':'block'; m.textContent=(open?'▸':'▾')+' 拍摄要点（'+ (box.querySelectorAll('.pt').length) +' 条）';});
 }
 function toggleP(el){}
-function triggerRefresh(){
-  // 静态页无法直接跑云端采集，提示到 App 内操作（与制造业 app 一致）
-  alert('请在「旅游情报」App 内点「立即刷新」触发云端采集；\n或在本地终端运行：python3 collect.py && python3 travel_processor.py');
+function toast(msg){
+  const t=document.getElementById('toast'); t.textContent=msg; t.style.display='block';
+  clearTimeout(window.__tT); window.__tT=setTimeout(()=>{t.style.display='none';},6000);
 }
+function triggerRefresh(){
+  if(window.__TRAVEL_NATIVE__){
+    toast('正在云端采集新增景点…');
+    try{ window.webkit.messageHandlers.travelRefresh.postMessage('refresh'); }
+    catch(e){ location.href='travelintel://refresh'; }
+    return;
+  }
+  alert('请在「全国旅游情报」App 内点「立即刷新」触发云端采集；\n或在本地终端运行：python3 collect.py && python3 travel_processor.py');
+}
+window.__travelRefreshStatus=function(m){ toast(m); };
+window.__travelRefreshDone=function(m){ toast(m); setTimeout(function(){ location.reload(); },800); };
+window.__travelRefreshFail=function(m){ toast(m); };
 fetch('cards.json').then(r=>r.json()).then(d=>{
   ETYPES=d.etypes; PROVS=d.provs; HOTS=d.hots; CARDS=d.cards;
   buildChips(); render();
