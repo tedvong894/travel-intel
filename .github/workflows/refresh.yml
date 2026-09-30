@@ -1,0 +1,36 @@
+name: refresh
+on:
+  schedule:
+    - cron: '10 0 * * *'          # UTC 00:10 = 北京 08:10
+  workflow_dispatch: {}            # 允许手动 / App 触发
+permissions:
+  contents: write
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: 安装依赖
+        run: pip install --quiet openpyxl edge-tts
+      - name: 采集（高德 POI）
+        env:
+          AMAP_KEY: ${{ secrets.AMAP_KEY }}
+        run: python collect.py
+      - name: 处理 + 渲染看板
+        run: python travel_processor.py
+      - name: 短视频工坊（底稿 xlsx + index.json）
+        run: python workshop.py --top 12
+      - name: 配音（前 6 张 A 模式）
+        run: python tts_build.py --top 6 --mode A
+      - name: 提交
+        run: |
+          git config user.email "bot@workbuddy.local"
+          git config user.name "travel-bot"
+          git add -A
+          git commit -m "auto: $(date +%F) refresh" || echo "no changes"
+          git push

@@ -1,0 +1,13 @@
+# 密钥绝不入库
+.amap_key
+
+# Python
+__pycache__/
+*.pyc
+*.egg-info/
+
+# 配音成品（体积大，按需本地保留，不进仓库）
+video/voice/*.mp3
+
+# 系统
+.DS_Store

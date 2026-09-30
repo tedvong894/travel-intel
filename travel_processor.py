@@ -1,0 +1,266 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""
+旅游情报 — 核心处理器
+数据流：raw_YYYYMMDD.json（采集层）→ 算分+原因卡+分类 → travel_db.jsonl（累积，幂等）
+        → index.html（可视看板，含 A/B 短视频文案预览）
+依赖：仅标准库 + classify.py + workshop.py
+"""
+import os
+import sys
+import json
+import glob
+import datetime
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+if HERE not in sys.path:
+    sys.path.insert(0, HERE)
+import classify as clf  # noqa: E402
+import workshop as ws  # noqa: E402
+
+
+def process_raw():
+    """读所有 raw_*.json，去重后并入 travel_db.jsonl。幂等。"""
+    db_path = os.path.join(HERE, "travel_db.jsonl")
+    known = {}
+    if os.path.exists(db_path):
+        with open(db_path, "r", encoding="utf-8") as f:
+            for line in f:
+                if line.strip():
+                    try:
+                        c = json.loads(line)
+                        known[c["card_id"]] = c
+                    except Exception:
+                        pass
+
+    added = 0
+    for rawf in sorted(glob.glob(os.path.join(HERE, "raw_*.json"))):
+        try:
+            with open(rawf, "r", encoding="utf-8") as f:
+                items = json.load(f)
+        except Exception:
+            continue
+        for spot in items:
+            cid = spot.get("card_id")
+            if not cid or cid in known:
+                continue
+            total, detail = clf.score_spot(spot)
+            reasons = clf.build_reasons(spot, total)
+            card = {
+                "card_id": cid,
+                "name": spot.get("name", ""),
+                "province": spot.get("province", ""),
+                "city": spot.get("city", ""),
+                "district": spot.get("district", ""),
+                "address": spot.get("address", ""),
+                "location": spot.get("location", ""),
+                "rating": spot.get("rating"),
+                "cost": spot.get("cost"),
+                "etype": spot.get("etype", "nature"),
+                "etype_label": spot.get("etype_label", "自然秘境"),
+                "hot_tier": spot.get("hot_tier", "小众"),
+                "best_season": spot.get("best_season", []),
+                "off_season": spot.get("off_season", []),
+                "score": total,
+                "detail": detail,
+                "reasons": reasons,
+                "updated": datetime.date.today().isoformat(),
+            }
+            known[cid] = card
+            added += 1
+
+    # 写回（按评分降序）
+    cards = sorted(known.values(), key=lambda c: c.get("score", 0), reverse=True)
+    with open(db_path, "w", encoding="utf-8") as f:
+        for c in cards:
+            f.write(json.dumps(c, ensure_ascii=False) + "\n")
+    return added, len(cards)
+
+
+def render_html(cards):
+    data = []
+    for c in cards:
+        sc = ws.build_scripts(c)
+        data.append({
+            "id": c["card_id"], "name": c["name"], "prov": c["province"], "city": c["city"],
+            "etype": c["etype"], "etype_label": c["etype_label"], "hot": c["hot_tier"],
+            "rating": c["rating"], "cost": c["cost"], "score": c["score"], "detail": c["detail"],
+            "worth": c["reasons"]["worth"], "avoid": c["reasons"]["avoid"],
+            "best": c["best_season"], "off": c["off_season"],
+            "sa": [{"role": r, "text": t, "dur": d} for r, t, d in sc["A"]["segments"]],
+            "sb": [{"role": r, "text": t, "dur": d} for r, t, d in sc["B"]["segments"]],
+            "points": sc["points"],
+        })
+    today = datetime.date.today().isoformat()
+    # 维度聚合（导航）
+    etypes = {}
+    provs = {}
+    hots = {}
+    for c in cards:
+        etypes[c["etype_label"]] = etypes.get(c["etype_label"], 0) + 1
+        provs[c["province"]] = provs.get(c["province"], 0) + 1
+        hots[c["hot_tier"]] = hots.get(c["hot_tier"], 0) + 1
+
+    html = HTML_TMPL.replace("__TITLE__", "全国旅游情报")
+    html = html.replace("__DATE__", today)
+    html = html.replace("__COUNT__", str(len(cards)))
+    html = html.replace("__ETYPES__", json.dumps(etypes, ensure_ascii=False))
+    html = html.replace("__PROVS__", json.dumps(provs, ensure_ascii=False))
+    html = html.replace("__HOTS__", json.dumps(hots, ensure_ascii=False))
+    html = html.replace("__CARDS__", json.dumps(data, ensure_ascii=False))
+    return html
+
+
+HTML_TMPL = r"""<!DOCTYPE html>
+<html lang="zh-CN"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>__TITLE__</title>
+<style>
+* { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+body { margin:0; font-family:-apple-system,"PingFang SC","Microsoft YaHei",sans-serif;
+  background:#f6f6f4; color:#222; font-size:14px; }
+.top { position:sticky; top:0; z-index:10; background:#f6f6f4; padding:12px 14px 8px;
+  border-bottom:1px solid #e7e7e3; }
+.top h1 { font-size:17px; margin:0 0 2px; font-weight:600; }
+.top .meta { font-size:12px; color:#8a8a85; }
+.top .meta b { color:#c0392b; }
+.refresh { float:right; font-size:12px; color:#2b6cb0; border:1px solid #cfe0f0;
+  background:#fff; border-radius:14px; padding:4px 12px; cursor:pointer; }
+.filters { padding:8px 14px 4px; }
+.chips { display:flex; flex-wrap:wrap; gap:6px; margin-bottom:6px; }
+.chip { font-size:12px; padding:4px 11px; border-radius:14px; background:#fff;
+  border:1px solid #e2e2dd; color:#555; cursor:pointer; user-select:none; }
+.chip.on { background:#2b6cb0; color:#fff; border-color:#2b6cb0; }
+.chip small { opacity:.6; margin-left:3px; }
+.grid { padding:10px 14px 40px; display:grid; grid-template-columns:repeat(auto-fill,minmax(280px,1fr)); gap:12px; }
+.card { background:#fff; border:1px solid #ececea; border-radius:12px; padding:12px 13px; }
+.card h3 { margin:0 0 4px; font-size:15px; font-weight:600; }
+.badges { display:flex; gap:5px; flex-wrap:wrap; margin-bottom:8px; }
+.bd { font-size:11px; padding:2px 8px; border-radius:10px; background:#eef2f6; color:#456; }
+.bd.hot { background:#fdecea; color:#c0392b; }
+.bd.cool { background:#e8f3ec; color:#27784b; }
+.score { display:flex; align-items:baseline; gap:6px; margin:6px 0 8px; }
+.score .num { font-size:26px; font-weight:700; color:#222; }
+.score .lab { font-size:11px; color:#9a9a95; }
+.bars { margin:6px 0 8px; }
+.bar { display:flex; align-items:center; gap:6px; margin:3px 0; font-size:11px; color:#777; }
+.bar .k { width:48px; flex:none; }
+.bar .t { flex:1; height:6px; background:#eee; border-radius:3px; overflow:hidden; }
+.bar .f { height:100%; background:#7fa8d0; }
+.bar .v { width:30px; text-align:right; flex:none; color:#555; }
+.expand { margin-top:6px; border-top:1px dashed #eee; padding-top:8px; }
+.sec { font-size:12px; margin:6px 0 3px; font-weight:600; color:#444; }
+.sec.a { color:#c0392b; } .sec.b { color:#27784b; }
+.tip { font-size:12px; line-height:1.55; margin:2px 0; color:#555; padding-left:12px; position:relative; }
+.tip:before { content:"·"; position:absolute; left:2px; color:#bbb; }
+.tip.av:before { content:"!"; color:#c0392b; }
+.seg { font-size:12px; line-height:1.5; margin:3px 0; color:#555; }
+.seg b { color:#333; }
+.pt { font-size:11px; color:#666; margin:2px 0; }
+.pt .ly { font-size:10px; padding:1px 6px; border-radius:8px; margin-right:5px; }
+.pt .l1 { background:#fdf0d8; color:#a9742b; } .pt .l2 { background:#e8eef6; color:#3a6ea5; }
+.more { font-size:12px; color:#2b6cb0; cursor:pointer; margin-top:6px; display:inline-block; }
+.empty { text-align:center; color:#aaa; padding:40px; }
+</style></head>
+<body>
+<div class="top">
+  <button class="refresh" id="refreshBtn" onclick="triggerRefresh()">⟳ 立即刷新</button>
+  <h1>全国旅游情报</h1>
+  <div class="meta">更新 <b>__DATE__</b> · 收录 <b>__COUNT__</b> 个景点 · 评分=景观30+性价比25+可达20+出片25</div>
+</div>
+<div class="filters">
+  <div class="chips" id="fType"></div>
+  <div class="chips" id="fHot"></div>
+  <div class="chips" id="fProv"></div>
+</div>
+<div class="grid" id="grid"></div>
+<script>
+const ETYPES=__ETYPES__, PROVS=__PROVS__, HOTS=__HOTS__, CARDS=__CARDS__;
+let f={type:'',hot:'',prov:''};
+function chipBox(el,obj,key,allLabel){
+  let h='<span class="chip'+(f[key]===''?' on':'')+'" data-k="" data-key="'+key+'">'+allLabel+
+    (obj['__all__']?'':'')+'</span>';
+  for(const k in obj){ h+='<span class="chip'+(f[key]===k?' on':'')+'" data-key="'+key+'" data-k="'+k+'">'+
+    k+'<small>'+obj[k]+'</small></span>'; }
+  document.getElementById(el).innerHTML=h;
+}
+function buildChips(){
+  chipBox('fType',ETYPES,'type','全部类型');
+  chipBox('fHot',HOTS,'hot','全部热度');
+  chipBox('fProv',PROVS,'prov','全部地区');
+  document.querySelectorAll('.chip').forEach(c=>c.onclick=()=>{
+    const key=c.dataset.key, k=c.dataset.k;
+    f[key]=(f[key]===k)?'':k; buildChips(); render();
+  });
+}
+function bars(d){const names={scenic:'景观',value:'性价比',access:'可达',film:'出片'};
+  let h='';for(const k in names){const v=d[k];const pct=Math.round(v/30*100);
+    h+='<div class="bar"><span class="k">'+names[k]+'</span><span class="t"><span class="f" style="width:'+Math.min(100,pct)+'%"></span></span><span class="v">'+v+'</span></div>';}return h;}
+function segHtml(arr){let h='';arr.forEach(s=>{h+='<div class="seg"><b>'+(s.role||'')+'：</b>'+s.text+'</div>';});return h;}
+function pointsHtml(pts){let h='';pts.forEach(p=>{const ly=p.layer==='L1自拍'?'l1':'l2';
+  h+='<div class="pt"><span class="ly '+ly+'">'+p.layer+'</span>'+p.point+'</div>';});return h;}
+function cardHtml(c){
+  const season=c.best.length?('最佳'+MONTH[c.best[0]]+'–'+MONTH[c.best[c.best.length-1]]):'四季皆宜';
+  const off=c.off.length?('；避开'+MONTH[c.off[0]]):'';
+  let h='<div class="card">';
+  h+='<h3>'+c.name+'</h3>';
+  h+='<div class="badges"><span class="bd">'+c.prov+c.city+'</span>'+
+     '<span class="bd">'+c.etype_label+'</span>'+
+     '<span class="bd '+(c.hot==='大众'?'hot':'cool')+'">'+c.hot+'</span>'+
+     (c.rating?'<span class="bd">评分'+c.rating+'</span>':'')+'</div>';
+  h+='<div class="score"><span class="num">'+c.score+'</span><span class="lab">/100 综合分</span></div>';
+  h+='<div class="bars">'+bars(c.detail)+'</div>';
+  h+='<div class="expand">';
+  h+='<div class="sec">为什么值得去</div>';
+  c.worth.forEach(w=>h+='<div class="tip">'+w+'</div>');
+  h+='<div class="sec">避坑提醒</div>';
+  c.avoid.forEach(a=>h+='<div class="tip av">'+a+'</div>');
+  h+='<div class="sec">🎬 短视频文案（A避坑 / B感悟）</div>';
+  h+='<div style="font-size:11px;color:#c0392b;margin:2px 0">【A·避坑指南式】</div>'+segHtml(c.sa);
+  h+='<div style="font-size:11px;color:#27784b;margin:6px 0 2px">【B·反差感悟式】</div>'+segHtml(c.sb);
+  h+='<div class="more" onclick="toggleP(this)">▸ 拍摄要点（'+c.points.length+' 条）</div>';
+  h+='<div style="display:none">'+pointsHtml(c.points)+'</div>';
+  h+='</div></div>';
+  return h;
+}
+const MONTH=['1月','2月','3月','4月','5月','6月','7月','8月','9月','10月','11月','12月'];
+function render(){
+  const g=document.getElementById('grid');
+  const list=CARDS.filter(c=>(!f.type||c.etype_label===f.type)&&(!f.hot||c.hot===f.hot)&&(!f.prov||c.prov===f.prov));
+  if(!list.length){g.innerHTML='<div class="empty">没有匹配的景点，换个筛选试试</div>';return;}
+  g.innerHTML=list.map(cardHtml).join('');
+  document.querySelectorAll('.more').forEach(m=>m.onclick=()=>{
+    const box=m.nextElementSibling; const open=box.style.display!=='none';
+    box.style.display=open?'none':'block'; m.textContent=(open?'▸':'▾')+' 拍摄要点（'+ (box.querySelectorAll('.pt').length) +' 条）';});
+}
+function toggleP(el){}
+function triggerRefresh(){
+  // 静态页无法直接跑云端采集，提示到 App 内操作（与制造业 app 一致）
+  alert('请在「旅游情报」App 内点「立即刷新」触发云端采集；\n或在本地终端运行：python3 collect.py && python3 travel_processor.py');
+}
+buildChips(); render();
+</script>
+</body></html>"""
+
+
+def main():
+    added, total = process_raw()
+    db = os.path.join(HERE, "travel_db.jsonl")
+    cards = []
+    if os.path.exists(db):
+        with open(db, "r", encoding="utf-8") as f:
+            for line in f:
+                if line.strip():
+                    cards.append(json.loads(line))
+    html = render_html(cards)
+    with open(os.path.join(HERE, "index.html"), "w", encoding="utf-8") as f:
+        f.write(html)
+    # 副本（本地兼容）
+    with open(os.path.join(HERE, "dashboard.html"), "w", encoding="utf-8") as f:
+        f.write(html)
+    print(f"[processor] 新增 {added} · 累积 {total} · 已渲染 index.html / dashboard.html")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
